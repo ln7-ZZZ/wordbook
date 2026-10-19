@@ -1,0 +1,215 @@
+/* =========================================================================
+ * 单词本 - 样式
+ * 基调：清新简洁浅色（白/浅灰底），点缀浅蓝科技感（面板底色/标题/标签）
+ * ========================================================================= */
+:root {
+  --blue: #2563eb;          /* 主蓝 */
+  --blue-deep: #1e40af;     /* 深蓝（标题） */
+  --blue-bg: #eff6ff;       /* 浅蓝面板底 */
+  --blue-border: #bfdbfe;   /* 浅蓝描边 */
+  --gray-bg: #f7f9fc;       /* 页面底 */
+  --line: #e2e8f0;          /* 浅灰线 */
+  --text: #1f2937;
+  --text-dim: #64748b;
+  --green: #16a34a;
+  --red: #dc2626;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  background: var(--gray-bg);
+  color: var(--text);
+}
+
+/* ===== 顶栏与导航 ===== */
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 28px;
+  background: #fff;
+  border-bottom: 1px solid var(--line);
+  box-shadow: 0 1px 4px rgba(37, 99, 235, 0.06);
+}
+header h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--blue-deep);
+  letter-spacing: 2px;
+}
+nav button { margin-left: 8px; }
+nav button.active {
+  background: var(--blue);
+  border-color: var(--blue);
+  color: #fff;
+  font-weight: 600;
+}
+
+/* ===== 布局卡片 ===== */
+main { max-width: 960px; margin: 24px auto; padding: 0 16px; }
+.view {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 22px 26px;
+  box-shadow: 0 2px 10px rgba(30, 64, 175, 0.05);
+}
+.view h2 {
+  margin-top: 0;
+  font-size: 18px;
+  color: var(--blue-deep);
+  padding: 2px 0 10px 12px;
+  border-bottom: 1px solid var(--line);
+  border-left: 4px solid var(--blue);
+}
+.view h3 {
+  font-size: 15px;
+  margin: 20px 0 8px;
+  color: var(--blue);
+  font-weight: 600;
+}
+
+/* ===== 表单控件 ===== */
+.row { display: flex; gap: 8px; margin-bottom: 12px; }
+.row input { flex: 1; }
+
+input[type="text"], input[type="password"], input[type="number"], select {
+  padding: 8px 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 14px;
+  background: #fff;
+  transition: border-color .15s, box-shadow .15s;
+}
+input:focus, select:focus {
+  outline: none;
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px var(--blue-bg);
+}
+
+button {
+  padding: 8px 16px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 14px;
+  transition: all .15s;
+}
+button:hover { border-color: var(--blue); color: var(--blue); background: var(--blue-bg); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* 主要操作按钮：实心蓝 */
+#btn-query, #btn-start-quiz, #quiz-submit, #btn-confirm-add,
+#btn-manual-add, #btn-save-settings, #btn-quiz-wrong {
+  background: var(--blue);
+  border-color: var(--blue);
+  color: #fff;
+  font-weight: 600;
+}
+#btn-query:hover, #btn-start-quiz:hover, #quiz-submit:hover, #btn-confirm-add:hover,
+#btn-manual-add:hover, #btn-save-settings:hover, #btn-quiz-wrong:hover {
+  background: var(--blue-deep);
+  color: #fff;
+}
+
+/* ===== 表格 ===== */
+table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 14px; }
+th, td { border: 1px solid var(--line); padding: 9px 12px; text-align: left; vertical-align: top; }
+th { background: var(--blue-bg); color: var(--blue-deep); font-weight: 600; }
+tr:hover td { background: #f8fbff; }
+
+/* ===== 小标签（科技感浅蓝点缀） ===== */
+.chip {
+  display: inline-block;
+  padding: 1px 10px;
+  border-radius: 999px;
+  background: var(--blue-bg);
+  border: 1px solid var(--blue-border);
+  color: var(--blue-deep);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap; /* “四级词库”等标签文字不折行 */
+}
+/* [错题本] 徽章：跟在单词后面同一行 */
+.tag-wrong {
+  display: inline-block;
+  white-space: nowrap;
+  margin-left: 6px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: var(--red);
+  font-size: 12px;
+  font-weight: 600;
+}
+.nowrap { white-space: nowrap; }
+.pos {
+  color: var(--blue);
+  font-weight: 700;
+  font-family: "Consolas", "Courier New", monospace;
+}
+.book-count { margin: 0 0 10px; font-size: 14px; color: var(--text-dim); }
+.book-count strong { color: var(--blue-deep); font-size: 16px; }
+
+/* ===== 表单组 ===== */
+.form-group { margin-bottom: 14px; }
+.form-group label { display: block; margin-bottom: 4px; font-weight: 600; font-size: 14px; color: var(--blue-deep); }
+.form-group input, .form-group select { width: 340px; max-width: 100%; }
+
+.manual-row { display: flex; gap: 8px; margin-bottom: 8px; }
+.manual-row input:first-child { width: 110px; flex: none; }
+.manual-row input:last-child { flex: 1; }
+
+.hint { color: var(--text-dim); font-size: 13px; line-height: 1.7; }
+.ok { color: var(--green); }
+.bad { color: var(--red); font-weight: 600; }
+
+/* ===== 默写区 ===== */
+.quiz-word {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: var(--blue-deep);
+}
+.quiz-defs { font-size: 18px; line-height: 1.9; }
+#quiz-prompt {
+  margin: 16px 0;
+  padding: 18px 20px;
+  background: var(--blue-bg);
+  border: 1px solid var(--blue-border);
+  border-radius: 8px;
+}
+#quiz-input { font-size: 16px; padding: 10px 12px; }
+#quiz-result {
+  margin-top: 12px;
+  padding: 14px 18px;
+  background: var(--blue-bg);
+  border: 1px solid var(--blue-border);
+  border-radius: 8px;
+}
+#quiz-progress { color: var(--blue); font-weight: 600; }
+
+/* ===== 录入预览 ===== */
+#add-preview {
+  margin-top: 12px;
+  padding: 14px 18px;
+  background: var(--blue-bg);
+  border: 1px solid var(--blue-border);
+  border-radius: 8px;
+}
+#add-preview table { background: #fff; }
+#add-manual {
+  margin-top: 12px;
+  padding: 14px 18px;
+  border: 1px dashed var(--blue-border);
+  border-radius: 8px;
+}
+
+code { background: var(--blue-bg); color: var(--blue-deep); padding: 1px 6px; border-radius: 4px; }
+hr { border: none; border-top: 1px solid var(--line); margin: 20px 0; }
