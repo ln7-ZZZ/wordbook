@@ -64,6 +64,18 @@
         var parsed = JSON.parse(raw);
         store.words = Array.isArray(parsed.words) ? parsed.words : [];
         store.settings = Object.assign({}, DEFAULT_SETTINGS, parsed.settings || {});
+        return;
+      }
+      // 首次打开（本机从未存过任何数据）：自动载入内置种子词库
+      var seed = window.WORDBOOK_SEED;
+      if (seed && Array.isArray(seed.words) && seed.words.length) {
+        store.words = seed.words;
+        store.settings = Object.assign(
+          {},
+          DEFAULT_SETTINGS,
+          { randomCount: (seed.settings && seed.settings.randomCount) || DEFAULT_SETTINGS.randomCount }
+        );
+        saveStore();
       }
     } catch (e) {
       console.warn('读取本地数据失败，已重置', e);
