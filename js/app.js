@@ -9,6 +9,7 @@
   /* ===== 常量 ===== */
   var LS_KEY = 'wordbook_v1';
   var MAX_DEFS = 3;
+  var MAX_PHRASE_DEFS = 5;
   var WRONG_REMOVE_THRESHOLD = 5; // 错题本累计答对 5 次移除
 
   var DEFAULT_SETTINGS = {
@@ -21,9 +22,10 @@
   };
 
   /* ===== 状态 ===== */
-  var store = { words: [], settings: Object.assign({}, DEFAULT_SETTINGS), deleted: {} };
+  var store = { words: [], phrases: [], settings: Object.assign({}, DEFAULT_SETTINGS), deleted: {}, deletedPhrases: {} };
   // words[i] = { word, defs:[{pos,meaning}], date, addedAt, source,
-  //              wrong, correctStreak, wrongCount, rightCount }
+  //              wrong, correctStreak, wrongCount, rightCount, updatedAt }
+  // phrases[i] = { phrase, defs:[{pos,meaning}], date, addedAt, source, updatedAt }
   var quiz = null; // { list, idx, mode:'c2e'|'e2c', results:[] }
 
   /* ===== 工具 ===== */
@@ -64,7 +66,9 @@
       if (raw) {
         var parsed = JSON.parse(raw);
         store.words = Array.isArray(parsed.words) ? parsed.words : [];
+        store.phrases = Array.isArray(parsed.phrases) ? parsed.phrases : [];
         store.deleted = (parsed.deleted && typeof parsed.deleted === 'object') ? parsed.deleted : {};
+        store.deletedPhrases = (parsed.deletedPhrases && typeof parsed.deletedPhrases === 'object') ? parsed.deletedPhrases : {};
         store.settings = Object.assign({}, DEFAULT_SETTINGS, parsed.settings || {});
         return;
       }
@@ -72,7 +76,9 @@
       var seed = window.WORDBOOK_SEED;
       if (seed && Array.isArray(seed.words) && seed.words.length) {
         store.words = seed.words;
+        store.phrases = [];
         store.deleted = {};
+        store.deletedPhrases = {};
         store.settings = Object.assign(
           {},
           DEFAULT_SETTINGS,
@@ -82,7 +88,7 @@
       }
     } catch (e) {
       console.warn('读取本地数据失败，已重置', e);
-      store = { words: [], settings: Object.assign({}, DEFAULT_SETTINGS), deleted: {} };
+      store = { words: [], phrases: [], settings: Object.assign({}, DEFAULT_SETTINGS), deleted: {}, deletedPhrases: {} };
     }
   }
   // 只写本地：用于合并远端数据（避免触发再次上传）
@@ -134,6 +140,42 @@
     return true;
   }
 
+  function getPhrase(phrase) {
+    phrase = phrase.toLowerCase();
+    for (var i = 0; i < store.phrases.length; i++) {
+      if (store.phrases[i].phrase === phrase) return store.phrases[i];
+    }
+    return null;
+  }
+  function addPhrase(phrase, defs, source) {
+    phrase = phrase.toLowerCase().trim();
+    if (getPhrase(phrase)) return false;
+    var ts = Date.now();
+    if (store.deletedPhrases) delete store.deletedPhrases[phrase];
+    store.phrases.push({
+      phrase: phrase,
+      defs: defs.slice(0, MAX_PHRASE_DEFS),
+      date: fmtDate(ts),
+      addedAt: ts,
+      source: source,
+      updatedAt: ts
+    });
+    saveStore();
+    renderPhraseList(); // 词组页与录入同屏，加入后立即刷新列表
+    return true;
+  }
+  function removePhrase(phrase) {
+    for (var i = 0; i < store.phrases.length; i++) {
+      if (store.phrases[i].phrase === phrase) {
+        if (store.deletedPhrases) store.deletedPhrases[phrase] = Date.now();
+        store.phrases.splice(i, 1);
+        saveStore();
+        return true;
+      }
+    }
+    return false;
+  }
+
   /* ===== 词典查询层 ===== */
   // 1) 本地四六级词库
   function lookupCET(word) {
@@ -178,6 +220,29 @@
       .catch(function () { return null; });
   }
 
+  // 清理在线接口返回文本里的 HTML 实体与多余空白
+  function cleanText(t) {
+    return String(t)
+      .replace(/&#x0D;|&#13;|&#10;|&#xA;|&nbsp;/gi, ' ')
+      .replace(/<[^>]+>/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  // 2) MyMemory 在线翻译（返回中文，免费且支持跨域）
+  function fetchMyMemory(word) {
+    return fetch('https://api.mymemory.translated.net/get?q=' + encodeURIComponent(word) + '&langpair=en|zh-CN')
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        var t = cleanText(data && data.responseData && data.responseData.translatedText);
+        if (!t || /[A-Za-z]/.test(t)) return null;
+        var defs = t.split(/[；;，,]/).filter(Boolean).slice(0, MAX_DEFS)
+          .map(function (p) { return { pos: '', meaning: cleanText(p) }; });
+        return defs.length ? { source: '在线翻译', defs: defs } : null;
+      })
+      .catch(function () { return null; });
+  }
+
   // 3) Free Dictionary API（英文释义，兜底）
   function fetchFreeDict(word) {
     return fetch('https://api.dictionaryapi.dev/api/v2/entries/en/' + encodeURIComponent(word))
@@ -198,12 +263,57 @@
       .catch(function () { return null; });
   }
 
-  // 在线查询降级链：有道 → FreeDict
+  // 在线查询降级链：有道 → MyMemory（中文） → FreeDict（英文）
   function lookupOnline(word) {
     return fetchYoudao(word).then(function (res) {
       if (res) return res;
+      return fetchMyMemory(word);
+    }).then(function (res) {
+      if (res) return res;
       return fetchFreeDict(word);
     });
+  }
+
+  // 把英文释义翻译成中文（FreeDict 英文结果时使用）
+  function translateDefs(word, defs) {
+    var prompt =
+      '请把下面的英文释义翻译成简洁的中文，保留词性，最多 ' + MAX_DEFS + ' 条。' +
+      '严格返回 JSON：{"defs":[{"pos":"n.","meaning":"中文释义"}]}，不要任何多余文字。\n' +
+      '单词：' + word + '\n英文释义：\n' +
+      defs.map(function (d) { return d.pos + ' ' + d.meaning; }).join('\n');
+    return callLLM(prompt, { json: true }).then(function (text) {
+      var obj = parseJsonText(text);
+      var out = (obj.defs || []).filter(function (d) { return d && d.meaning; }).slice(0, MAX_DEFS);
+      if (!out.length) throw new Error('翻译结果为空');
+      return out.map(function (d) { return { pos: d.pos || '', meaning: d.meaning }; });
+    });
+  }
+
+  // 词组查询：优先 AI 生成中文释义，失败或无 Key 时用在线翻译兜底
+  function lookupPhraseLLM(phrase) {
+    var prompt =
+      '你是英语学习助手。请给出词组「' + phrase + '」的 2-5 条简洁中文释义（按常用义项拆分）。' +
+      '严格返回 JSON：{"defs":[{"pos":"v.","meaning":"中文释义"}]}，不要任何多余文字。';
+    return callLLM(prompt, { json: true }).then(function (text) {
+      var obj = parseJsonText(text);
+      var defs = (obj.defs || [])
+        .filter(function (d) { return d && d.meaning; })
+        .slice(0, MAX_PHRASE_DEFS)
+        .map(function (d) { return { pos: d.pos || '', meaning: d.meaning }; });
+      if (!defs.length) throw new Error('未生成释义');
+      return { source: 'AI 释义', defs: defs };
+    });
+  }
+
+  function lookupPhraseOnline(phrase) {
+    return fetch('https://api.mymemory.translated.net/get?q=' + encodeURIComponent(phrase) + '&langpair=en|zh-CN')
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        var t = cleanText(data && data.responseData && data.responseData.translatedText);
+        if (!t) return null;
+        return { source: '在线翻译', defs: [{ pos: '', meaning: t }] };
+      })
+      .catch(function () { return null; });
   }
 
   /* ===== 判分层 ===== */
@@ -217,11 +327,41 @@
     return s.provider === 'deepseek' ? 'deepseek-chat' : 'qwen-plus';
   }
 
-  // 英译汉 LLM 判分：意思相近判对；相差较多判错；漏写释义在 missing 中补充
-  function judgeLLM(word, defs, userAnswer) {
+  // 统一的大模型调用，返回模型输出的文本
+  function callLLM(prompt, opts) {
     var s = store.settings;
     var key = (s.apiKey || '').trim();
     if (!key) return Promise.reject(new Error('未配置 API Key'));
+    opts = opts || {};
+    var body = {
+      model: apiModel(s),
+      messages: [{ role: 'user', content: prompt }],
+      temperature: opts.temperature == null ? 0.2 : opts.temperature
+    };
+    if (opts.json) body.response_format = { type: 'json_object' };
+    return fetch(apiBase(s), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
+      body: JSON.stringify(body)
+    }).then(function (r) {
+      if (!r.ok) throw new Error('LLM 请求失败 HTTP ' + r.status);
+      return r.json();
+    }).then(function (data) {
+      var content = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+      if (!content) throw new Error('LLM 返回为空');
+      return content;
+    });
+  }
+
+  // 从模型输出里提取 JSON（兼容前后夹杂说明文字的情况）
+  function parseJsonText(text) {
+    var a = text.indexOf('{'), b = text.lastIndexOf('}');
+    if (a > -1 && b > a) text = text.slice(a, b + 1);
+    return JSON.parse(text);
+  }
+
+  // 英译汉 LLM 判分：意思相近判对；相差较多判错；漏写释义在 missing 中补充
+  function judgeLLM(word, defs, userAnswer) {
     var std = defs.map(function (d) { return d.pos + ' ' + d.meaning; }).join('\n');
     var prompt =
       '你是英语词汇默写判题助手。请根据标准释义评判学生的中文答案，并严格返回一个 JSON 对象（不要 markdown 代码块、不要多余解释）。\n' +
@@ -232,25 +372,8 @@
       '单词：' + word + '\n' +
       '标准释义：\n' + std + '\n' +
       '学生答案：' + userAnswer;
-    return fetch(apiBase(s), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
-      body: JSON.stringify({
-        model: apiModel(s),
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.2,
-        response_format: { type: 'json_object' }
-      })
-    }).then(function (r) {
-      if (!r.ok) throw new Error('LLM 请求失败 HTTP ' + r.status);
-      return r.json();
-    }).then(function (data) {
-      var content = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
-      if (!content) throw new Error('LLM 返回为空');
-      var text = content.trim();
-      var a = text.indexOf('{'), b = text.lastIndexOf('}');
-      if (a > -1 && b > a) text = text.slice(a, b + 1);
-      var result = JSON.parse(text);
+    return callLLM(prompt, { json: true }).then(function (content) {
+      var result = parseJsonText(content);
       return {
         correct: result.judge === '对',
         comment: result.comment || '',
@@ -465,6 +588,7 @@
       navBtns[j].className = navBtns[j].dataset.view === id ? 'active' : '';
     }
     if (id === 'view-book') renderBook();
+    if (id === 'view-phrase') renderPhraseList();
     if (id === 'view-wrong') renderWrong();
     if (id === 'view-settings') renderSettings();
   }
@@ -503,19 +627,47 @@
     var container = $('add-preview');
     container.style.display = 'block';
     $('add-manual').style.display = 'none';
+    var hasEnglish = /英文/.test(source);
+    var hasKey = !!(store.settings.apiKey || '').trim();
     var html = '<p>单词：<strong>' + esc(word) + '</strong>　来源：<strong>' + esc(source) + '</strong></p>' +
       '<table><thead><tr><th>词性</th><th>释义</th></tr></thead><tbody>';
     defs.forEach(function (d) {
-      html += '<tr><td>' + esc(d.pos) + '</td><td>' + esc(d.meaning) + '</td></tr>';
+      html += '<tr><td>' + (esc(d.pos) || '-') + '</td><td>' + esc(d.meaning) + '</td></tr>';
     });
-    html += '</tbody></table>' +
-      '<button type="button" id="btn-confirm-add">确认加入</button> ' +
+    html += '</tbody></table>';
+    if (hasEnglish && hasKey) html += '<button type="button" id="btn-ai-translate">AI 翻译成中文</button> ';
+    html += '<button type="button" id="btn-confirm-add">确认加入</button> ' +
+      '<button type="button" id="btn-custom-edit">自定义释义</button> ' +
       '<button type="button" id="btn-cancel-add">取消</button>';
+    if (hasEnglish) {
+      html += '<p class="hint">当前为英文释义。' +
+        (hasKey ? '可点「AI 翻译成中文」自动转成中文，' : '可先配置 API Key 用 AI 翻译，') +
+        '也可点「自定义释义」自己填写。</p>';
+    }
     container.innerHTML = html;
     $('btn-confirm-add').onclick = function () {
       if (addWord(word, defs, source)) { alert('已加入单词本'); clearAddPreview(); }
     };
+    $('btn-custom-edit').onclick = function () {
+      showAddManual(word);
+      for (var i = 0; i < Math.min(defs.length, 3); i++) {
+        $('manual-pos' + (i + 1)).value = defs[i].pos || '';
+        $('manual-mean' + (i + 1)).value = defs[i].meaning || '';
+      }
+    };
     $('btn-cancel-add').onclick = clearAddPreview;
+    var aiBtn = $('btn-ai-translate');
+    if (aiBtn) aiBtn.onclick = function () {
+      aiBtn.disabled = true;
+      aiBtn.textContent = '翻译中...';
+      translateDefs(word, defs).then(function (zh) {
+        showAddPreview(word, zh, 'AI 翻译');
+      }).catch(function (e) {
+        alert('AI 翻译失败：' + e.message);
+        aiBtn.disabled = false;
+        aiBtn.textContent = 'AI 翻译成中文';
+      });
+    };
   }
 
   function showAddManual(word) {
@@ -537,10 +689,91 @@
     for (var i = 1; i <= 3; i++) {
       var pos = $('manual-pos' + i).value.trim();
       var mean = $('manual-mean' + i).value.trim();
-      if (pos && mean) defs.push({ pos: pos, meaning: mean });
+      // 词性可以留空，只要有一条释义即可
+      if (mean) defs.push({ pos: pos, meaning: mean });
     }
-    if (!defs.length) { alert('请至少填写一条词性和释义'); return; }
+    if (!defs.length) { alert('请至少填写一条释义'); return; }
     if (addWord(word, defs, '手动录入')) { alert('已加入单词本'); clearAddPreview(); }
+  }
+
+  // --- 词组录入 ---
+  function clearPhraseForm() {
+    $('phrase-preview').style.display = 'none';
+    $('phrase-manual').style.display = 'none';
+    $('phrase-input').value = '';
+  }
+
+  function onQueryPhrase() {
+    var phrase = $('phrase-input').value.trim().toLowerCase();
+    if (!phrase) { alert('请输入词组'); return; }
+    if (getPhrase(phrase)) { alert('该词组已在词组本中'); return; }
+    var btn = $('btn-query-phrase');
+    btn.disabled = true;
+    btn.textContent = '查询中...';
+    var done = function () { btn.disabled = false; btn.textContent = '查询并加入'; };
+
+    lookupPhraseLLM(phrase).catch(function () { return lookupPhraseOnline(phrase); })
+      .then(function (res) {
+        done();
+        if (res && res.defs && res.defs.length) {
+          showPhrasePreview(phrase, res.defs, res.source);
+        } else {
+          alert('未找到该词组，请自定义释义');
+          showPhraseManual(phrase);
+        }
+      });
+  }
+
+  function showPhrasePreview(phrase, defs, source) {
+    var container = $('phrase-preview');
+    container.style.display = 'block';
+    $('phrase-manual').style.display = 'none';
+    var html = '<p>词组：<strong>' + esc(phrase) + '</strong>　来源：<strong>' + esc(source) + '</strong></p>' +
+      '<table><thead><tr><th>词性</th><th>释义</th></tr></thead><tbody>';
+    defs.forEach(function (d) {
+      html += '<tr><td>' + (esc(d.pos) || '-') + '</td><td>' + esc(d.meaning) + '</td></tr>';
+    });
+    html += '</tbody></table>' +
+      '<button type="button" id="btn-confirm-phrase">确认加入</button> ' +
+      '<button type="button" id="btn-custom-phrase">自定义释义</button> ' +
+      '<button type="button" id="btn-cancel-phrase">取消</button>';
+    container.innerHTML = html;
+    $('btn-confirm-phrase').onclick = function () {
+      if (addPhrase(phrase, defs, source)) { alert('已加入词组本'); clearPhraseForm(); }
+    };
+    $('btn-custom-phrase').onclick = function () {
+      showPhraseManual(phrase);
+      for (var i = 0; i < Math.min(defs.length, MAX_PHRASE_DEFS); i++) {
+        $('phrase-pos' + (i + 1)).value = defs[i].pos || '';
+        $('phrase-mean' + (i + 1)).value = defs[i].meaning || '';
+      }
+    };
+    $('btn-cancel-phrase').onclick = clearPhraseForm;
+  }
+
+  function showPhraseManual(phrase) {
+    $('phrase-preview').style.display = 'none';
+    var container = $('phrase-manual');
+    container.style.display = 'block';
+    $('phrase-manual-word').value = phrase || '';
+    for (var i = 1; i <= MAX_PHRASE_DEFS; i++) {
+      $('phrase-pos' + i).value = '';
+      $('phrase-mean' + i).value = '';
+    }
+  }
+
+  function onPhraseManualAdd() {
+    var phrase = $('phrase-manual-word').value.trim().toLowerCase();
+    if (!phrase) { alert('请输入词组'); return; }
+    if (getPhrase(phrase)) { alert('该词组已在词组本中'); return; }
+    var defs = [];
+    for (var i = 1; i <= MAX_PHRASE_DEFS; i++) {
+      var pos = $('phrase-pos' + i).value.trim();
+      var mean = $('phrase-mean' + i).value.trim();
+      if (mean) defs.push({ pos: pos, meaning: mean });
+    }
+    if (!defs.length) { alert('请至少填写一条释义'); return; }
+    if (addPhrase(phrase, defs, '自定义释义')) { alert('已加入词组本'); clearPhraseForm(); }
   }
 
   // --- 单词本 ---
@@ -591,6 +824,43 @@
       if (btn.dataset.action === 'wrong') { setWrong(w, true); renderBook(); }
       if (btn.dataset.action === 'unwrong') { setWrong(w, false); renderBook(); }
       if (btn.dataset.action === 'speak') { speak(w); }
+    };
+  }
+
+  // --- 词组本 ---
+  function renderPhraseList() {
+    var container = $('phrase-list');
+    if (!store.phrases.length) { container.innerHTML = '<p>词组本为空</p>'; return; }
+    var groups = {};
+    store.phrases.forEach(function (p) {
+      var g = p.date || '未知日期';
+      if (!groups[g]) groups[g] = [];
+      groups[g].push(p);
+    });
+    var dates = Object.keys(groups).sort().reverse();
+    var html = '<p class="book-count">共 <strong>' + store.phrases.length + '</strong> 个词组</p>';
+    dates.forEach(function (d) {
+      html += '<h3>' + esc(d) + '（' + groups[d].length + ' 个）</h3>';
+      html += '<table><thead><tr><th>词组</th><th>来源</th><th>词性 + 释义</th><th>操作</th></tr></thead><tbody>';
+      groups[d].forEach(function (p) {
+        var defsHtml = p.defs.map(function (df) {
+          return (df.pos ? '<span class="pos">' + esc(df.pos) + '</span> ' : '') + esc(df.meaning);
+        }).join('<br>');
+        html += '<tr>' +
+          '<td class="nowrap"><strong>' + esc(p.phrase) + '</strong></td>' +
+          '<td><span class="chip">' + esc(p.source || '-') + '</span></td>' +
+          '<td>' + defsHtml + '</td>' +
+          '<td class="nowrap"><button type="button" data-phrase="' + esc(p.phrase) + '">删除</button></td>' +
+          '</tr>';
+      });
+      html += '</tbody></table>';
+    });
+    container.innerHTML = html;
+    container.onclick = function (e) {
+      var btn = e.target.closest('button');
+      if (!btn) return;
+      var ph = btn.dataset.phrase;
+      if (confirm('确认删除 ' + ph + ' ?')) { removePhrase(ph); renderPhraseList(); }
     };
   }
 
@@ -651,7 +921,9 @@
   function exportData() {
     var clone = {
       words: store.words,
+      phrases: store.phrases,
       deleted: store.deleted || {},
+      deletedPhrases: store.deletedPhrases || {},
       settings: Object.assign({}, store.settings)
     };
     delete clone.settings.syncToken; // Token 是私密凭据，不写进备份文件
@@ -677,7 +949,9 @@
           if (!Array.isArray(data.words)) throw new Error('备份格式不正确');
           if (!confirm('导入将覆盖当前 ' + store.words.length + ' 条记录，确认？')) return;
           store.words = data.words;
+          store.phrases = Array.isArray(data.phrases) ? data.phrases : [];
           store.deleted = {};
+          store.deletedPhrases = {};
           if (data.settings) store.settings = Object.assign({}, DEFAULT_SETTINGS, data.settings);
           saveStore();
           alert('导入成功');
@@ -746,52 +1020,70 @@
     });
   }
 
-  function wordTime(w) { return (w && (w.updatedAt || w.addedAt)) || 0; }
+  function itemTime(it) { return (it && (it.updatedAt || it.addedAt)) || 0; }
 
-  // 同一个词两边都有：取较新的一份，成绩计数取最大值（计数只会累加）
-  function pickWord(a, b) {
+  // 同一条记录两边都有：取较新的一份；单词的成绩计数取最大值（计数只增不减）
+  function pickItem(a, b) {
     if (!a) return b;
     if (!b) return a;
-    var newer = wordTime(a) >= wordTime(b) ? a : b;
+    var newer = itemTime(a) >= itemTime(b) ? a : b;
     var out = Object.assign({}, newer);
-    out.rightCount = Math.max(a.rightCount || 0, b.rightCount || 0);
-    out.wrongCount = Math.max(a.wrongCount || 0, b.wrongCount || 0);
-    out.correctStreak = Math.max(a.correctStreak || 0, b.correctStreak || 0);
+    if ('rightCount' in a || 'rightCount' in b || 'wrongCount' in a || 'wrongCount' in b) {
+      out.rightCount = Math.max(a.rightCount || 0, b.rightCount || 0);
+      out.wrongCount = Math.max(a.wrongCount || 0, b.wrongCount || 0);
+      out.correctStreak = Math.max(a.correctStreak || 0, b.correctStreak || 0);
+    }
     out.addedAt = Math.min(a.addedAt || b.addedAt, b.addedAt || a.addedAt);
     return out;
   }
 
+  function mergeTombstones(a, b) {
+    var out = Object.assign({}, a || {});
+    Object.keys(b || {}).forEach(function (k) { out[k] = Math.max(out[k] || 0, b[k] || 0); });
+    return out;
+  }
+
+  // 并集合并：同一 key 取较新记录，删除时间晚于修改时间的记录被移除
+  function mergeList(localList, remoteList, deleted, key) {
+    var map = {};
+    (localList || []).forEach(function (it) { if (it && it[key]) map[it[key]] = it; });
+    var merged = [];
+    (remoteList || []).forEach(function (it) {
+      if (!it || !it[key]) return;
+      merged.push(pickItem(map[it[key]], it));
+      delete map[it[key]];
+    });
+    Object.keys(map).forEach(function (k) { merged.push(map[k]); });
+    return merged.filter(function (it) { return !(deleted[it[key]] && deleted[it[key]] > itemTime(it)); });
+  }
+
   function refreshVisibleViews() {
     if ($('view-book') && $('view-book').style.display === 'block') renderBook();
+    if ($('view-phrase') && $('view-phrase').style.display === 'block') renderPhraseList();
     if ($('view-wrong') && $('view-wrong').style.display === 'block') renderWrong();
   }
 
-  // 合并远端数据到本地：按单词并集，删除墓碑（deleted）时间较新的优先
+  // 合并远端数据到本地（单词与词组各按自己的 key 合并）
   function mergeRemote(doc) {
-    var remoteWords = Array.isArray(doc.words) ? doc.words : [];
-    var deleted = Object.assign({}, store.deleted || {});
-    var rd = doc.deleted || {};
-    Object.keys(rd).forEach(function (k) { deleted[k] = Math.max(deleted[k] || 0, rd[k] || 0); });
-
-    var localMap = {};
-    store.words.forEach(function (w) { localMap[w.word] = w; });
-
-    var merged = [];
-    remoteWords.forEach(function (rw) {
-      if (!rw || !rw.word) return;
-      merged.push(pickWord(localMap[rw.word], rw));
-      delete localMap[rw.word];
-    });
-    Object.keys(localMap).forEach(function (k) { merged.push(localMap[k]); });
-
-    store.words = merged.filter(function (w) { return !(deleted[w.word] && deleted[w.word] > wordTime(w)); });
-    store.deleted = deleted;
+    var wDel = mergeTombstones(store.deleted, doc.deleted);
+    var pDel = mergeTombstones(store.deletedPhrases, doc.deletedPhrases);
+    store.words = mergeList(store.words, doc.words, wDel, 'word');
+    store.phrases = mergeList(store.phrases, doc.phrases, pDel, 'phrase');
+    store.deleted = wDel;
+    store.deletedPhrases = pDel;
     saveStoreLocal();
     refreshVisibleViews();
   }
 
   function buildDoc() {
-    return { version: 1, updatedAt: Date.now(), words: store.words, deleted: store.deleted || {} };
+    return {
+      version: 1,
+      updatedAt: Date.now(),
+      words: store.words,
+      phrases: store.phrases,
+      deleted: store.deleted || {},
+      deletedPhrases: store.deletedPhrases || {}
+    };
   }
 
   // 拉取：打开网页时用
@@ -878,6 +1170,11 @@
     $('btn-query').onclick = onQueryWord;
     $('add-input').addEventListener('keypress', function (e) { if (e.key === 'Enter') onQueryWord(); });
     $('btn-manual-add').onclick = onManualAdd;
+
+    // 词组
+    $('btn-query-phrase').onclick = onQueryPhrase;
+    $('phrase-input').addEventListener('keypress', function (e) { if (e.key === 'Enter') onQueryPhrase(); });
+    $('btn-phrase-manual-add').onclick = onPhraseManualAdd;
 
     // 单词本搜索
     $('book-search').addEventListener('input', renderBook);

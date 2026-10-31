@@ -12,6 +12,7 @@
     <nav>
       <button data-view="view-add">录入</button>
       <button data-view="view-book">单词本</button>
+      <button data-view="view-phrase">词组</button>
       <button data-view="view-quiz">默写</button>
       <button data-view="view-wrong">错题本</button>
       <button data-view="view-settings">设置</button>
@@ -52,6 +53,37 @@
         <input type="text" id="book-search" placeholder="搜索单词...">
       </div>
       <div id="book-list"></div>
+    </section>
+
+    <!-- 词组视图 -->
+    <section id="view-phrase" class="view" style="display:none">
+      <h2>词组</h2>
+      <div class="row">
+        <input type="text" id="phrase-input" placeholder="输入英文词组，回车查询">
+        <button id="btn-query-phrase">查询并加入</button>
+      </div>
+      <div id="phrase-preview" style="display:none"></div>
+      <div id="phrase-manual" style="display:none">
+        <h3>自定义释义</h3>
+        <div class="row"><input type="text" id="phrase-manual-word" placeholder="词组"></div>
+        <div class="manual-row">
+          <input id="phrase-pos1" placeholder="词性（可留空）"><input id="phrase-mean1" placeholder="释义 1">
+        </div>
+        <div class="manual-row">
+          <input id="phrase-pos2" placeholder="词性（可留空）"><input id="phrase-mean2" placeholder="释义 2">
+        </div>
+        <div class="manual-row">
+          <input id="phrase-pos3" placeholder="词性（可留空）"><input id="phrase-mean3" placeholder="释义 3">
+        </div>
+        <div class="manual-row">
+          <input id="phrase-pos4" placeholder="词性（可留空）"><input id="phrase-mean4" placeholder="释义 4">
+        </div>
+        <div class="manual-row">
+          <input id="phrase-pos5" placeholder="词性（可留空）"><input id="phrase-mean5" placeholder="释义 5">
+        </div>
+        <button id="btn-phrase-manual-add">确认加入词组本</button>
+      </div>
+      <div id="phrase-list"></div>
     </section>
 
     <!-- 默写视图 -->

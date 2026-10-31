@@ -204,6 +204,20 @@ tr:hover td { background: #f8fbff; }
   border-radius: 8px;
 }
 #add-preview table { background: #fff; }
+#phrase-preview {
+  margin-top: 12px;
+  padding: 14px 18px;
+  background: var(--blue-bg);
+  border: 1px solid var(--blue-border);
+  border-radius: 8px;
+}
+#phrase-preview table { background: #fff; }
+#phrase-manual {
+  margin-top: 12px;
+  padding: 14px 18px;
+  border: 1px dashed var(--blue-border);
+  border-radius: 8px;
+}
 #add-manual {
   margin-top: 12px;
   padding: 14px 18px;

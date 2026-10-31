@@ -1,0 +1,3 @@
+# 本地私密文件，禁止提交
+token key.txt
+*.local
