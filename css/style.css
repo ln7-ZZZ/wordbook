@@ -213,3 +213,7 @@ tr:hover td { background: #f8fbff; }
 
 code { background: var(--blue-bg); color: var(--blue-deep); padding: 1px 6px; border-radius: 4px; }
 hr { border: none; border-top: 1px solid var(--line); margin: 20px 0; }
+
+.sync-status.ok { color: var(--green); }
+.sync-status.err { color: var(--red); }
+.sync-status.busy { color: var(--blue); }

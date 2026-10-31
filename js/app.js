@@ -16,11 +16,12 @@
     apiKey: '',
     model: 'deepseek-chat',
     baseUrl: '',
-    randomCount: 10         // 随机抽默默认数量
+    randomCount: 10,        // 随机抽默默认数量
+    syncToken: ''           // GitHub Token（仅本机保存，不参与同步/备份公开）
   };
 
   /* ===== 状态 ===== */
-  var store = { words: [], settings: Object.assign({}, DEFAULT_SETTINGS) };
+  var store = { words: [], settings: Object.assign({}, DEFAULT_SETTINGS), deleted: {} };
   // words[i] = { word, defs:[{pos,meaning}], date, addedAt, source,
   //              wrong, correctStreak, wrongCount, rightCount }
   var quiz = null; // { list, idx, mode:'c2e'|'e2c', results:[] }
@@ -63,6 +64,7 @@
       if (raw) {
         var parsed = JSON.parse(raw);
         store.words = Array.isArray(parsed.words) ? parsed.words : [];
+        store.deleted = (parsed.deleted && typeof parsed.deleted === 'object') ? parsed.deleted : {};
         store.settings = Object.assign({}, DEFAULT_SETTINGS, parsed.settings || {});
         return;
       }
@@ -70,6 +72,7 @@
       var seed = window.WORDBOOK_SEED;
       if (seed && Array.isArray(seed.words) && seed.words.length) {
         store.words = seed.words;
+        store.deleted = {};
         store.settings = Object.assign(
           {},
           DEFAULT_SETTINGS,
@@ -79,10 +82,13 @@
       }
     } catch (e) {
       console.warn('读取本地数据失败，已重置', e);
-      store = { words: [], settings: Object.assign({}, DEFAULT_SETTINGS) };
+      store = { words: [], settings: Object.assign({}, DEFAULT_SETTINGS), deleted: {} };
     }
   }
-  function saveStore() { localStorage.setItem(LS_KEY, JSON.stringify(store)); }
+  // 只写本地：用于合并远端数据（避免触发再次上传）
+  function saveStoreLocal() { localStorage.setItem(LS_KEY, JSON.stringify(store)); }
+  // 写本地 + 排程上传
+  function saveStore() { saveStoreLocal(); scheduleSync(); }
 
   function getWord(word) {
     word = word.toLowerCase();
@@ -95,20 +101,26 @@
     word = word.toLowerCase().trim();
     if (getWord(word)) return false;
     var ts = Date.now();
+    if (store.deleted) delete store.deleted[word]; // 该词此前被删过也不影响重新加入
     store.words.push({
       word: word,
       defs: defs.slice(0, MAX_DEFS),
       date: fmtDate(ts),
       addedAt: ts,
       source: source,
-      wrong: false, correctStreak: 0, wrongCount: 0, rightCount: 0
+      wrong: false, correctStreak: 0, wrongCount: 0, rightCount: 0, updatedAt: ts
     });
     saveStore();
     return true;
   }
   function removeWord(word) {
     for (var i = 0; i < store.words.length; i++) {
-      if (store.words[i].word === word) { store.words.splice(i, 1); saveStore(); return true; }
+      if (store.words[i].word === word) {
+        if (store.deleted) store.deleted[word] = Date.now(); // 删除墓碑，便于多设备同步
+        store.words.splice(i, 1);
+        saveStore();
+        return true;
+      }
     }
     return false;
   }
@@ -117,6 +129,7 @@
     if (!w) return false;
     w.wrong = toWrong;
     if (!toWrong) w.correctStreak = 0;
+    w.updatedAt = Date.now();
     saveStore();
     return true;
   }
@@ -304,6 +317,7 @@
       w.wrong = true;
       w.correctStreak = 0;
     }
+    w.updatedAt = Date.now();
     saveStore();
   }
 
@@ -612,6 +626,9 @@
     $('set-model').value = s.model;
     $('set-baseurl').value = s.baseUrl;
     $('set-randomcount').value = s.randomCount;
+    $('set-synctoken').value = s.syncToken || '';
+    if (!syncEnabled()) setSyncStatus('未开启自动同步', '');
+    else if (sync.lastOk) setSyncStatus('已同步 ' + fmtTime(sync.lastOk), 'ok');
     onProviderChange();
   }
   function onProviderChange() {
@@ -632,7 +649,13 @@
     alert('设置已保存');
   }
   function exportData() {
-    var blob = new Blob([JSON.stringify(store, null, 2)], { type: 'application/json' });
+    var clone = {
+      words: store.words,
+      deleted: store.deleted || {},
+      settings: Object.assign({}, store.settings)
+    };
+    delete clone.settings.syncToken; // Token 是私密凭据，不写进备份文件
+    var blob = new Blob([JSON.stringify(clone, null, 2)], { type: 'application/json' });
     var url = URL.createObjectURL(blob);
     var a = document.createElement('a');
     a.href = url;
@@ -654,6 +677,7 @@
           if (!Array.isArray(data.words)) throw new Error('备份格式不正确');
           if (!confirm('导入将覆盖当前 ' + store.words.length + ' 条记录，确认？')) return;
           store.words = data.words;
+          store.deleted = {};
           if (data.settings) store.settings = Object.assign({}, DEFAULT_SETTINGS, data.settings);
           saveStore();
           alert('导入成功');
@@ -664,6 +688,178 @@
       reader.readAsText(file);
     };
     input.click();
+  }
+
+  /* ===== 同步层：以 GitHub 仓库作为多设备共享存储 ===== */
+  var SYNC_REPO = 'ln7-ZZZ/wordbook';
+  var SYNC_PATH = 'data/words.json';
+  var SYNC_URL = 'https://api.github.com/repos/' + SYNC_REPO + '/contents/' + SYNC_PATH;
+  var SYNC_DEBOUNCE = 3000; // 改动后延迟上传，避免每点一下就产生一个提交
+
+  var sync = { sha: null, timer: null, busy: false, lastOk: 0 };
+
+  function syncEnabled() { return !!(store.settings.syncToken || '').trim(); }
+
+  function fmtTime(ts) {
+    var d = new Date(ts);
+    return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2) + ':' + ('0' + d.getSeconds()).slice(-2);
+  }
+
+  function setSyncStatus(text, kind) {
+    var el = $('sync-status');
+    if (!el) return;
+    el.textContent = text;
+    el.className = 'hint sync-status' + (kind ? ' ' + kind : '');
+  }
+
+  function b64encode(str) {
+    var bytes = new TextEncoder().encode(str), bin = '';
+    for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin);
+  }
+  function b64decode(b64) {
+    var bin = atob((b64 || '').replace(/\s/g, ''));
+    var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new TextDecoder().decode(bytes);
+  }
+
+  function ghRequest(method, body) {
+    var opts = {
+      method: method,
+      headers: {
+        'Authorization': 'Bearer ' + (store.settings.syncToken || '').trim(),
+        'Accept': 'application/vnd.github+json'
+      }
+    };
+    if (body) {
+      opts.headers['Content-Type'] = 'application/json';
+      opts.body = JSON.stringify(body);
+    }
+    return fetch(SYNC_URL, opts).then(function (r) {
+      if (r.status === 404) return null;
+      if (r.status === 401 || r.status === 403) throw new Error('Token 无效或权限不足（' + r.status + '）');
+      if (!r.ok) {
+        return r.text().then(function () { throw new Error('GitHub 返回 ' + r.status); });
+      }
+      return r.json();
+    });
+  }
+
+  function wordTime(w) { return (w && (w.updatedAt || w.addedAt)) || 0; }
+
+  // 同一个词两边都有：取较新的一份，成绩计数取最大值（计数只会累加）
+  function pickWord(a, b) {
+    if (!a) return b;
+    if (!b) return a;
+    var newer = wordTime(a) >= wordTime(b) ? a : b;
+    var out = Object.assign({}, newer);
+    out.rightCount = Math.max(a.rightCount || 0, b.rightCount || 0);
+    out.wrongCount = Math.max(a.wrongCount || 0, b.wrongCount || 0);
+    out.correctStreak = Math.max(a.correctStreak || 0, b.correctStreak || 0);
+    out.addedAt = Math.min(a.addedAt || b.addedAt, b.addedAt || a.addedAt);
+    return out;
+  }
+
+  function refreshVisibleViews() {
+    if ($('view-book') && $('view-book').style.display === 'block') renderBook();
+    if ($('view-wrong') && $('view-wrong').style.display === 'block') renderWrong();
+  }
+
+  // 合并远端数据到本地：按单词并集，删除墓碑（deleted）时间较新的优先
+  function mergeRemote(doc) {
+    var remoteWords = Array.isArray(doc.words) ? doc.words : [];
+    var deleted = Object.assign({}, store.deleted || {});
+    var rd = doc.deleted || {};
+    Object.keys(rd).forEach(function (k) { deleted[k] = Math.max(deleted[k] || 0, rd[k] || 0); });
+
+    var localMap = {};
+    store.words.forEach(function (w) { localMap[w.word] = w; });
+
+    var merged = [];
+    remoteWords.forEach(function (rw) {
+      if (!rw || !rw.word) return;
+      merged.push(pickWord(localMap[rw.word], rw));
+      delete localMap[rw.word];
+    });
+    Object.keys(localMap).forEach(function (k) { merged.push(localMap[k]); });
+
+    store.words = merged.filter(function (w) { return !(deleted[w.word] && deleted[w.word] > wordTime(w)); });
+    store.deleted = deleted;
+    saveStoreLocal();
+    refreshVisibleViews();
+  }
+
+  function buildDoc() {
+    return { version: 1, updatedAt: Date.now(), words: store.words, deleted: store.deleted || {} };
+  }
+
+  // 拉取：打开网页时用
+  function syncPull() {
+    if (!syncEnabled()) return Promise.resolve(false);
+    setSyncStatus('同步中…', 'busy');
+    return ghRequest('GET').then(function (res) {
+      if (!res) { sync.sha = null; setSyncStatus('远端还没有数据，新增/删除一个单词后会自动上传', ''); return false; }
+      sync.sha = res.sha;
+      mergeRemote(JSON.parse(b64decode(res.content)));
+      sync.lastOk = Date.now();
+      setSyncStatus('已同步 ' + fmtTime(sync.lastOk), 'ok');
+      return true;
+    }).catch(function (e) {
+      setSyncStatus('同步失败：' + e.message, 'err');
+      return false;
+    });
+  }
+
+  // 上传：先拉最新再合并，然后整体提交，避免覆盖另一台设备的改动
+  function syncPush() {
+    if (!syncEnabled() || sync.busy) return Promise.resolve(false);
+    sync.busy = true;
+    setSyncStatus('同步中…', 'busy');
+    return ghRequest('GET').then(function (res) {
+      if (res) {
+        sync.sha = res.sha;
+        mergeRemote(JSON.parse(b64decode(res.content)));
+      } else {
+        sync.sha = null;
+      }
+      var body = {
+        message: '同步单词本 ' + new Date().toLocaleString('zh-CN'),
+        content: b64encode(JSON.stringify(buildDoc()))
+      };
+      if (sync.sha) body.sha = sync.sha;
+      return ghRequest('PUT', body);
+    }).then(function (res) {
+      if (res && res.content && res.content.sha) sync.sha = res.content.sha;
+      sync.lastOk = Date.now();
+      setSyncStatus('已同步 ' + fmtTime(sync.lastOk), 'ok');
+      return true;
+    }).catch(function (e) {
+      setSyncStatus('同步失败：' + e.message, 'err');
+      return false;
+    }).then(function (ok) {
+      sync.busy = false;
+      return ok;
+    });
+  }
+
+  function scheduleSync() {
+    if (!syncEnabled()) return;
+    if (sync.timer) clearTimeout(sync.timer);
+    sync.timer = setTimeout(function () { sync.timer = null; syncPush(); }, SYNC_DEBOUNCE);
+  }
+
+  function saveSyncToken() {
+    store.settings.syncToken = ($('set-synctoken').value || '').trim();
+    saveStoreLocal();
+    if (!syncEnabled()) {
+      setSyncStatus('未开启自动同步', '');
+      alert('已清除同步 Token');
+      return;
+    }
+    syncPull().then(function () { return syncPush(); }).then(function (ok) {
+      alert(ok ? '同步已开启，数据已上传到 GitHub' : 'Token 已保存，但同步失败，请检查 Token 权限（需 Contents: Read and write）');
+    });
   }
 
   /* ===== 事件绑定与启动 ===== */
@@ -707,10 +903,17 @@
     $('btn-save-settings').onclick = saveSettings;
     $('btn-export').onclick = exportData;
     $('btn-import').onclick = importData;
+    $('btn-save-sync').onclick = saveSyncToken;
+    $('btn-sync-now').onclick = function () {
+      syncPull().then(function () { return syncPush(); });
+    };
     $('set-provider').onchange = onProviderChange;
 
     // 默认视图
     showView('view-add');
+
+    // 已开启同步则启动时拉取一次
+    if (syncEnabled()) syncPull();
   }
 
   document.addEventListener('DOMContentLoaded', init);

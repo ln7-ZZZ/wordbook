@@ -136,6 +136,16 @@
       <button id="btn-export">导出备份</button>
       <button id="btn-import">导入备份</button>
       <p class="hint">提示：数据存储在浏览器 localStorage，清除缓存会丢失，请定期导出备份。若浏览器拦截 API 跨域请求，请在项目目录运行 <code>python -m http.server 8000</code> 后访问 http://localhost:8000 。</p>
+      <hr>
+      <h3>自动同步（多设备）</h3>
+      <div class="form-group">
+        <label>GitHub Token</label>
+        <input type="password" id="set-synctoken" placeholder="github_pat_...">
+      </div>
+      <button id="btn-save-sync">保存并开启同步</button>
+      <button id="btn-sync-now">立即同步</button>
+      <p class="hint sync-status" id="sync-status">未开启自动同步</p>
+      <p class="hint">开启后，增删单词会自动提交到你的 GitHub 仓库 <code>data/words.json</code>；其它设备打开网页会自动拉取并合并。Token 只保存在本机，不会写进备份文件。</p>
     </section>
   </main>
 
